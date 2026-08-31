@@ -5,14 +5,14 @@
 
 int main(){
     srand(time(0));
-    int size=1000000, min=-10000, max=10000, max_depth=0;
+    int size=1000, min=-10000, max=10000, max_depth=0;
 
     int arr[size];
-    Sorted_Reversed(arr,size,min,max, compareAsc);
+    Random(arr,size,min,max);
     //printArr(arr,size);
     auto start = std::chrono::high_resolution_clock::now();
     
-    BubbleSort(arr,size);
+    selectionSort(arr,size);
 
     auto end = std::chrono::high_resolution_clock::now();
     
