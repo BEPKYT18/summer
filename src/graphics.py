@@ -1,12 +1,12 @@
-| Компонент | Значение |
-|-----------|----------|
-| Модель ПК | HONOR Magicbook X14 |
-| Процессор | Intel(R) Core(TM) i3-10110U |
-| Ядра/потоки | 2 ядра / 4 потока |
-| Оперативная память | 8 ГБ DDR4 |
-| Накопитель | NVMe PCLe SSD 256GB |
-| Версии компиляторов | GCC 6.3.0 |
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import seaborn as sns
+from io import StringIO
+import re
 
+# ====================== ДАННЫЕ ======================
+md = """
 | (~) ОС | Компилятор | Конфиг | Алгоритм |  N=10 (время, мс) | N=10 (память, КБ) | N=500 (время, мс) | N=500 (память, КБ) |  N=1000 (время, мс) | N=1000 (память, КБ) |  N=50000 (время, мс) | N=50000 (память, КБ) |  N=1000000 (время, мс) | N=1000000 (память, КБ) |
 |--------|------------|--------|----------|-------------------|-|-|-|-|-|-|-|-|-|
 | Win    | GCC        | -O0    | Bubble   |0                  |-|1|-|3|-|7388|-|-|-|
@@ -29,16 +29,6 @@
 | Win    | GCC        | -O1    | Radix    |0                  |-|0|-|0|-|0|-|-|-|
 | Win    | GCC        | -O1    | Bucket   |0                  |-|0|-|0|-|0|-|-|-|
 | Win    | GCC        | -O1    | qsort    |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Bubble   |0                  |-|0|-|1|-|1|-|-|-|
-| Win    | GCC        | -O2    | Selection|0                  |-|0|-|0|-|1|-|-|-|
-| Win    | GCC        | -O2    | Insertion|0                  |-|0|-|0|-|1|-|-|-|
-| Win    | GCC        | -O2    | Quick    |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Merge    |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Heap     |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Counting |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Radix    |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | Bucket   |0                  |-|0|-|0|-|0|-|-|-|
-| Win    | GCC        | -O2    | qsort    |0                  |-|0|-|0|-|0|-|-|-|
 | Win    | GCC        | -O2    | Bubble   |0                  |-|0|-|1|-|1|-|-|-|
 | Win    | GCC        | -O2    | Selection|0                  |-|0|-|0|-|1|-|-|-|
 | Win    | GCC        | -O2    | Insertion|0                  |-|0|-|0|-|1|-|-|-|
@@ -79,10 +69,134 @@
 | Win    | GCC        | -flto | Radix    |0                   |-|0|-|0|-|0|-|-|-|
 | Win    | GCC        | -flto | Bucket   |0                   |-|0|-|0|-|0|-|-|-|
 | Win    | GCC        | -flto | qsort    |0                   |-|0|-|0|-|0|-|-|-|
+"""
 
+# ====================== ПАРСИНГ ======================
+def parse_md(md_text: str) -> pd.DataFrame:
+    columns = [
+        'OS', 'Compiler', 'Config', 'Algorithm',
+        'N10_time', 'N10_mem', 'N500_time', 'N500_mem',
+        'N1000_time', 'N1000_mem', 'N50000_time', 'N50000_mem',
+        'N1M_time', 'N1M_mem'
+    ]
+    
+    rows = []
+    for line in md_text.strip().splitlines():
+        line = line.strip()
+        if not line or re.match(r'^\|[-:| ]+\|$', line) or 'Алгоритм' in line:
+            continue
+        if line.startswith('|'):
+            line = line[1:]
+        if line.endswith('|'):
+            line = line[:-1]
+        parts = [p.strip() for p in line.split('|')]
+        if len(parts) >= 4:
+            rows.append(parts[:len(columns)])
+    
+    df = pd.DataFrame(rows, columns=columns[:len(rows[0])] if rows else columns)
+    
+    # Дополняем недостающие столбцы
+    for col in columns:
+        if col not in df.columns:
+            df[col] = np.nan
+    
+    df = df[columns]
+    df = df.replace(['-', '', '||', 'nan', 'None'], np.nan)
+    
+    for col in df.columns:
+        if 'time' in col or 'mem' in col:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    df = df.drop_duplicates(subset=['Config', 'Algorithm'], keep='first')
+    return df
 
-проблемы: 
-1. Не работает программа, если в массиве 1000000 элементов
-2. Не удалось установить дополнительные компиляторы, поэтому исследования проводились на одном
-3. Не удалось посчитать глубину рекурсии и память
+df = parse_md(md)
 
+# Приводим к длинному формату (удобно для графиков)
+time_cols = {
+    'N10_time': 10,
+    'N500_time': 500,
+    'N1000_time': 1000,
+    'N50000_time': 50000,
+    'N1M_time': 1000000
+}
+
+long_df = df.melt(
+    id_vars=['Config', 'Algorithm'],
+    value_vars=list(time_cols.keys()),
+    var_name='N_col',
+    value_name='Time'
+)
+long_df['N'] = long_df['N_col'].map(time_cols)
+long_df = long_df.dropna(subset=['Time'])
+
+# ====================== ГРАФИКИ ======================
+sns.set_theme(style="whitegrid", font_scale=1.15)
+configs = df['Config'].unique()
+
+# -------------------------------------------------------
+# 1. Зависимость времени от N (отдельный график на каждый конфиг)
+# -------------------------------------------------------
+for cfg in configs:
+    data = long_df[long_df['Config'] == cfg]
+    if data.empty:
+        continue
+    
+    plt.figure(figsize=(11, 6))
+    
+    for alg in data['Algorithm'].unique():
+        subset = data[data['Algorithm'] == alg].sort_values('N')
+        # Чтобы логарифм не ломался на нулях
+        y = subset['Time'].replace(0, 0.05)
+        plt.plot(subset['N'], y, marker='o', linewidth=2.2, label=alg)
+    
+    plt.xscale('log')
+    plt.yscale('log')
+    plt.title(f'Время сортировки vs размер массива\nКонфиг: {cfg}', fontsize=15)
+    plt.xlabel('Количество элементов (N)')
+    plt.ylabel('Время, мс')
+    plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
+    plt.grid(True, which='both', ls='--', alpha=0.4)
+    plt.tight_layout()
+    plt.show()
+
+# -------------------------------------------------------
+# 2. Зависимость времени от конфига (для разных N)
+# -------------------------------------------------------
+interesting_N = [1000, 50000]  # самые показательные
+
+for n in interesting_N:
+    data = long_df[long_df['N'] == n]
+    if data.empty:
+        continue
+    
+    plt.figure(figsize=(13, 6))
+    sns.barplot(
+        data=data,
+        x='Algorithm',
+        y='Time',
+        hue='Config',
+        palette='tab10'
+    )
+    plt.title(f'Время сортировки при N = {n:,}', fontsize=15)
+    plt.ylabel('Время, мс')
+    plt.xlabel('')
+    plt.xticks(rotation=40, ha='right')
+    plt.legend(title='Конфиг', bbox_to_anchor=(1.02, 1), loc='upper left')
+    plt.tight_layout()
+    plt.show()
+
+# -------------------------------------------------------
+# 3. Дополнительно: все конфиги на одном графике (N=50000)
+# -------------------------------------------------------
+data = long_df[long_df['N'] == 50000]
+if not data.empty:
+    plt.figure(figsize=(12, 6))
+    sns.barplot(data=data, x='Config', y='Time', hue='Algorithm', palette='deep')
+    plt.title('Время при N = 50 000 — все сортировки и конфиги', fontsize=15)
+    plt.ylabel('Время, мс')
+    plt.xlabel('Конфигурация компилятора')
+    plt.xticks(rotation=25, ha='right')
+    plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9)
+    plt.tight_layout()
+    plt.show()
